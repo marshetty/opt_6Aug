@@ -239,59 +239,40 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
         log.error("price_at_0909 error: %s", e)
     return None
 
-# -------- Robust Yahoo daily open (no-verify, retry, query1/query2) --------
-_UAS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
-]
+# --- NEW: rolling VWAP over the last <period_min> minutes --------------------
+def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | None:
+    """
+    Rolling VWAP identical to TradingView's built-in “VWAP (Length = N)”:
+      • Take the last <period_min> one-minute candles
+      • VWAP = Σ(price * volume) / Σ(volume)
+    """
+    if df_1m is None or df_1m.empty or not isinstance(df_1m.index, pd.DatetimeIndex):
+        log.error("compute_period_vwap: invalid df_1m")
+        return None
 
-def _yahoo_chart_json(symbol_enc: str) -> float | None:
-    """Try query1 then query2; return latest available daily open."""
-    params = {"range": "10d", "interval": "1d", "includePrePost": "false", "events": "div,split"}
-    headers = {"User-Agent": random.choice(_UAS), "Accept": "application/json"}
-    for host in ("https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"):
-        url = f"{host}/v8/finance/chart/{symbol_enc}"
-        r = requests.get(url, params=params, headers=headers, timeout=15, verify=False)
-        if r.status_code == 429:
-            raise requests.HTTPError("429")
-        r.raise_for_status()
-        j = r.json()
-        result = j["chart"]["result"][0]
-        ts = result["timestamp"]
-        opens = result["indicators"]["quote"][0]["open"]
-        idx = pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
-        df = pd.DataFrame({"open": opens}, index=idx)
-        ist_today = now_ist().date()
-        row = df[df.index.date == ist_today]
-        val = float(row["open"].iloc[0]) if not row.empty else float(df["open"].iloc[-1])
-        return val
-    return None
+    # make sure the index is IST
+    if df_1m.index.tz is None:
+        df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+    else:
+        df_1m.index = df_1m.index.tz_convert("Asia/Kolkata")
 
-def yahoo_open_today_ist() -> float | None:
-    """Fetch NIFTY50 daily open from Yahoo, tolerant to 429 and SSL issues."""
-    symbol_enc = "%5ENSEI"
-    retries = 6
-    wait = 2.0
-    for i in range(1, retries + 1):
-        try:
-            val = _yahoo_chart_json(symbol_enc)
-            if val and val > 0:
-                log.info("Yahoo(open, robust) fetched: %.2f (attempt %d)", val, i)
-                return val
-        except requests.HTTPError as e:
-            if "429" in str(e):
-                log.warning("Yahoo 429 rate-limited (attempt %d) — backing off %.1fs", i, wait)
-                time.sleep(wait)
-                wait = min(wait * 2.0, 30.0)
-                continue
-            log.error("Yahoo HTTP error (attempt %d): %s", i, e)
-        except Exception as e:
-            log.warning("Yahoo fetch error (attempt %d): %s", i, e)
-        time.sleep(wait)
-        wait = min(wait * 1.6, 20.0)
-    log.error("Yahoo open failed after retries.")
-    return None
+    latest_ts = df_1m.index.max()
+    if pd.isna(latest_ts):
+        return None
+
+    window_start = latest_ts - dt.timedelta(minutes=period_min - 1)   # inclusive
+    win = df_1m[df_1m.index >= window_start]
+
+    if win.empty or win["volume"].fillna(0).sum() == 0:
+        log.warning("compute_period_vwap: not enough bars/volume")
+        return None
+
+    pv_sum  = (win["close"].astype(float) * win["volume"].astype(float)).sum()
+    vol_sum = win["volume"].astype(float).sum()
+
+    return float(pv_sum / vol_sum)
+
+
 
 # -------- VWAP 15m --------
 def compute_session_vwap_15m(df_1m: pd.DataFrame) -> tuple[float | None, pd.DataFrame]:
@@ -422,7 +403,7 @@ def build_df_with_imbalance(raw: dict, store: dict):
 
     if need_fresh:
         atm_strike = None; base_val = None; atm_status = "capture-failed"
-        for capt in (capture_today_atm_tv_0909, capture_today_atm_yahoo_open, capture_today_atm_underlying):
+        for capt in (capture_today_atm_tv_0909, capture_today_atm_underlying):
             a,b,s = capt()
             if a is not None:
                 atm_strike, base_val, atm_status = a,b,s
@@ -432,14 +413,14 @@ def build_df_with_imbalance(raw: dict, store: dict):
         atm_strike = int(stored_atm)
         atm_status = stored_status
         base_val   = store.get("base_value", 0.0)
-
+        """
         if atm_status != "captured-0909" and atm_status != "manual-override":
             y_a, y_b, y_s = capture_today_atm_yahoo_open()
             if y_a is not None and atm_strike != y_a:
                 log.info("Correcting ATM via Yahoo: %s → %s", atm_strike, y_a)
                 atm_strike, base_val, atm_status = y_a, y_b, y_s
                 update_store_atm(atm_strike, base_val, atm_status)
-
+        """
         log.info("Using ATM: %s (%s)", atm_strike, atm_status)
 
     # neighbors by weekday rule
@@ -615,12 +596,16 @@ def tradingview_loop(mem: StoreMem):
                         log.info("Imbalance refreshed immediately after ATM upgrade")
 
             # ---- 3) VWAP (15‑minute session cumulative) -----------------------
-            vwap_latest, df15 = compute_session_vwap_15m(df1)
+            #vwap_latest, df15 = compute_session_vwap_15m(df1)
+            vwap_latest = compute_period_vwap(df1, period_min=15)
+            with mem.lock:
+                mem.latest_vwap_period15 = vwap_latest   # keep for any future UI use
+            """
             with mem.lock:
                 mem.last_tv     = now_ist()
                 mem.vwap_latest = vwap_latest
                 mem.vwap_df15   = df15
-
+            """
             # ---- 4) Evaluate VWAP alert ---------------------------------------
             with mem.lock:
                 meta = mem.meta_opt or {}
@@ -724,7 +709,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Last OC pull", last_opt.strftime("%H:%M:%S") if last_opt else "—")
 c2.metric("Last TV pull", last_tv.strftime("%H:%M:%S") if last_tv else "—")
 c3.metric("Spot (underlying)", f"{meta.get('underlying', float('nan')):,.2f}" if meta else "—")
-c4.metric("VWAP (15m session)", f"{vwap_latest:,.2f}" if vwap_latest else "—")
+c4.metric("VWAP (15-min period)", f"{vwap_latest:,.2f}" if vwap_latest else "—")
 c5.metric("VWAP tolerance", f"±{VWAP_tol:.0f} pts")
 
 if df_live is None or df_live.empty:
@@ -776,7 +761,8 @@ k5.metric("Imbalance (PUTS − CALLS)", f"{imbalance_pct:,.2f}%")
 
 # VWAP/Spot caption
 if vwap_latest is not None and spot is not None:
-    st.caption(f"VWAP15m: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**")
+    #st.caption(f"VWAP15m: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**")
+    st.caption(f"VWAP15-period: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**"
 else:
     st.caption("VWAP or Spot not available yet. Check logs if this persists.")
 
