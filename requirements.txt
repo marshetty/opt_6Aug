@@ -1,18 +1,17 @@
-# --- core maths / data ---
+# --- core maths / data -------------------------------------------------------
 numpy>=2.3,<2.4
-pandas>=2.3,<2.4          # built against NumPy 2.3+
+pandas>=2.3,<2.4
 
-# --- web app & charts ---
+# --- streamlit GUI ----------------------------------------------------------
 streamlit>=1.47,<2.0
 streamlit-autorefresh>=1.0,<2.0
-plotly==6.2.0             # includes plotly.express
+plotly==6.2.0
 
-# --- market data & scraping ---
-tvDatafeed>=1.5,<1.6      # ← NEW: provides the TvDatafeed class
-cloudscraper>=1.2.71      # optional but keeps NSE handshake robust
-# yfinance, tradingview-datafeed no longer required
+# --- market data & scraping -------------------------------------------------
+tvdatafeed @ git+https://github.com/StreamAlpha/tvdatafeed.git@v1.0.9  # or tvdatafeed==1.0.9 on Python<=3.12
+cloudscraper>=1.2.71                # optional; remove if you’re happy with requests
 
-# --- networking / SSL ---
+# --- networking / SSL -------------------------------------------------------
 requests>=2.31
 urllib3>=2.2
 certifi>=2025.6
