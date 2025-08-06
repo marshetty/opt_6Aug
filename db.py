@@ -245,15 +245,22 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
 # --- NEW: rolling VWAP over the last <period_min> minutes --------------------
 def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | None:
     """
-    Rolling VWAP identical to TradingView's built-in “VWAP (Length = N)”:
-      • Take the last <period_min> one-minute candles
-      • VWAP = Σ(price * volume) / Σ(volume)
+    Rolling VWAP identical to TradingView’s **VWAP (Length = N)**:
+
+    • Take the last <period_min> one-minute candles (inclusive of the latest bar)
+    • If TradingView provides no volume for index symbols (volume == 0),
+      degrade gracefully to a simple mean of the closes.
     """
-    if df_1m is None or df_1m.empty or not isinstance(df_1m.index, pd.DatetimeIndex):
+    # ── 1. basic validation ────────────────────────────────────────────────
+    if (
+        df_1m is None
+        or df_1m.empty
+        or not isinstance(df_1m.index, pd.DatetimeIndex)
+    ):
         log.error("compute_period_vwap: invalid df_1m")
         return None
 
-    # make sure the index is IST
+    # ── 2. ensure timezone is Asia/Kolkata ─────────────────────────────────
     if df_1m.index.tz is None:
         df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
     else:
@@ -263,25 +270,25 @@ def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | No
     if pd.isna(latest_ts):
         return None
 
-    window_start = latest_ts - dt.timedelta(minutes=period_min - 1)   # inclusive
+    # ── 3. slice the rolling window ───────────────────────────────────────
+    window_start = latest_ts - dt.timedelta(minutes=period_min - 1)
     win = df_1m[df_1m.index >= window_start]
-    """
-    if win.empty or win["volume"].fillna(0).sum() == 0:
-        log.warning("compute_period_vwap: not enough bars/volume")
+
+    if win.empty:
+        log.warning("compute_period_vwap: window empty")
         return None
 
-    pv_sum  = (win["close"].astype(float) * win["volume"].astype(float)).sum()
-    vol_sum = win["volume"].astype(float).sum()
-    """
+    # ── 4. volume-aware vs. equal-weight fallback ─────────────────────────
     vol = win["volume"].fillna(0).astype(float)
-
-    # if TradingView gives zero volume for NIFTY, use equal-weight VWAP
     if vol.sum() == 0:
+        # Candle set has no volume (common for NIFTY index) → equal weight
         return float(win["close"].astype(float).mean())
-    
-    # normal volume-weighted calculation
+
     pv_sum  = (win["close"].astype(float) * vol).sum()
     vol_sum = vol.sum()
+    if vol_sum == 0:
+        return None
+
     return float(pv_sum / vol_sum)
 
 # ---------------- Weekday neighbors mapping ----------------
