@@ -5,12 +5,12 @@ pandas>=2.3,<2.4          # built against NumPy 2.3+
 # --- web app & charts ---
 streamlit>=1.47,<2.0
 streamlit-autorefresh>=1.0,<2.0
-plotly==6.2.0             # latest available; includes plotly.express
+plotly==6.2.0             # includes plotly.express
 
 # --- market data & scraping ---
-#yfinance>=0.2,<0.3
-#tradingview-datafeed==2.1.1   # provides the TvDatafeed class
-#cloudscraper>=1.2.71
+tvDatafeed>=1.5,<1.6      # ← NEW: provides the TvDatafeed class
+cloudscraper>=1.2.71      # optional but keeps NSE handshake robust
+# yfinance, tradingview-datafeed no longer required
 
 # --- networking / SSL ---
 requests>=2.31
