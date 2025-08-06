@@ -180,7 +180,8 @@ def fetch_raw_option_chain():
 
 # ---------------- TradingView helpers ----------------
 def tv_login():
-    from tvDatafeed import TvDatafeed
+    #from tvDatafeed import TvDatafeed
+    from tvdatafeed import TvDatafeed, Interval
     try:
         tv = TvDatafeed(username="dileep.marchetty@gmail.com", password="1dE6Land@123")
         log.info("Logged in to TradingView as %s", TV_USERNAME)
@@ -376,16 +377,6 @@ def build_df_with_imbalance(raw: dict, store: dict):
             atm_local = guess if guess in strikes_all else min(strikes_all, key=lambda x: abs(x - base_val))
             log.info("ATM capture(09:09 TV): base=%.2f atm=%s", base_val, atm_local)
             return int(atm_local), base_val, "captured-0909"
-        return None, None, "capture-failed"
-
-    def capture_today_atm_yahoo_open():
-        yopen = yahoo_open_today_ist()
-        if yopen and yopen > 0:
-            base_val = float(yopen)
-            guess = round_to_50(base_val)
-            atm_local = guess if guess in strikes_all else min(strikes_all, key=lambda x: abs(x - base_val))
-            log.info("ATM capture(Yahoo open): base=%.2f atm=%s", base_val, atm_local)
-            return int(atm_local), base_val, "captured-yahoo-open"
         return None, None, "capture-failed"
 
     def capture_today_atm_underlying():
@@ -595,22 +586,21 @@ def tradingview_loop(mem: StoreMem):
                             log.error("CSV write failed (TV‑trigger): %s", e)
                         log.info("Imbalance refreshed immediately after ATM upgrade")
 
-            # ---- 3) VWAP (15‑minute session cumulative) -----------------------
-            #vwap_latest, df15 = compute_session_vwap_15m(df1)
+            # ---- 3) VWAP (15-min period) ----------------------------------
             vwap_latest = compute_period_vwap(df1, period_min=15)
+            
+            # single authoritative write to shared memory
             with mem.lock:
-                mem.latest_vwap_period15 = vwap_latest   # keep for any future UI use
-            """
+                mem.last_tv     = now_ist()       # drives “Last TV pull” metric
+                mem.vwap_latest = vwap_latest     # dashboard & alerts read this
+                # (optional) keep the extra copy if you plan to use it elsewhere
+                mem.latest_vwap_period15 = vwap_latest
+            
+            # ---- 4) Evaluate VWAP alert -----------------------------------
             with mem.lock:
-                mem.last_tv     = now_ist()
-                mem.vwap_latest = vwap_latest
-                mem.vwap_df15   = df15
-            """
-            # ---- 4) Evaluate VWAP alert ---------------------------------------
-            with mem.lock:
-                meta = mem.meta_opt or {}
-                spot = meta.get("underlying")
-                sugg = meta.get("suggestion", "NO SIGNAL")
+                meta  = mem.meta_opt or {}
+                spot  = meta.get("underlying")
+                sugg  = meta.get("suggestion", "NO SIGNAL")
 
             alert = "NO ALERT"
             if (
