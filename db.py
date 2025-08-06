@@ -71,6 +71,8 @@ BEEP_WAV_B64 = (
 def setup_logger():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("nifty_app")
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
@@ -479,7 +481,8 @@ def write_vwap_files(stamp: str, vwap_latest: float | None, spot: float | None, 
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         v = f"{vwap_latest:.2f}" if vwap_latest is not None else "NA"
         s = f"{float(spot):.2f}" if spot is not None else "NA"
-        VWAP_NOW_TXT.write_text(f"{stamp} IST | VWAP15m={v} | Spot={s} | Signal={suggestion}\n")
+        #VWAP_NOW_TXT.write_text(f"{stamp} IST | VWAP15m={v} | Spot={s} | Signal={suggestion}\n")
+        VWAP_NOW_TXT.write_text(f"{stamp} IST | VWAP15period={v} | Spot={s} | Signal={suggestion}\n")
         header_needed = not VWAP_LOG_CSV.exists()
         with VWAP_LOG_CSV.open("a", encoding="utf-8") as f:
             if header_needed:
