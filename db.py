@@ -183,7 +183,7 @@ def fetch_raw_option_chain():
 # ---------------- TradingView helpers ----------------
 def tv_login():
     #from tvDatafeed import TvDatafeed
-    from tvdatafeed import TvDatafeed, Interval
+    from tvDatafeed import TvDatafeed, Interval 
     try:
         tv = TvDatafeed(username="dileep.marchetty@gmail.com", password="1dE6Land@123")
         log.info("Logged in to TradingView as %s", TV_USERNAME)
@@ -265,14 +265,23 @@ def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | No
 
     window_start = latest_ts - dt.timedelta(minutes=period_min - 1)   # inclusive
     win = df_1m[df_1m.index >= window_start]
-
+    """
     if win.empty or win["volume"].fillna(0).sum() == 0:
         log.warning("compute_period_vwap: not enough bars/volume")
         return None
 
     pv_sum  = (win["close"].astype(float) * win["volume"].astype(float)).sum()
     vol_sum = win["volume"].astype(float).sum()
+    """
+    vol = win["volume"].fillna(0).astype(float)
 
+    # if TradingView gives zero volume for NIFTY, use equal-weight VWAP
+    if vol.sum() == 0:
+        return float(win["close"].astype(float).mean())
+    
+    # normal volume-weighted calculation
+    pv_sum  = (win["close"].astype(float) * vol).sum()
+    vol_sum = vol.sum()
     return float(pv_sum / vol_sum)
 
 # ---------------- Weekday neighbors mapping ----------------
