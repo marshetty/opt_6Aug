@@ -762,7 +762,7 @@ k5.metric("Imbalance (PUTS − CALLS)", f"{imbalance_pct:,.2f}%")
 # VWAP/Spot caption
 if vwap_latest is not None and spot is not None:
     #st.caption(f"VWAP15m: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**")
-    st.caption(f"VWAP15-period: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**"
+    st.caption(f"VWAP15-period: **{vwap_latest:,.2f}**  •  Spot: **{spot:,.2f}**  •  Diff: **{spot - vwap_latest:+.2f}**")
 else:
     st.caption("VWAP or Spot not available yet. Check logs if this persists.")
 
