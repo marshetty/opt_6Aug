@@ -273,56 +273,6 @@ def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | No
 
     return float(pv_sum / vol_sum)
 
-
-
-# -------- VWAP 15m --------
-def compute_session_vwap_15m(df_1m: pd.DataFrame) -> tuple[float | None, pd.DataFrame]:
-    """Session VWAP on 15m bars, last trading session fallback."""
-    if df_1m is None or df_1m.empty or not isinstance(df_1m.index, pd.DatetimeIndex):
-        log.error("compute_session_vwap_15m: invalid df_1m")
-        return None, pd.DataFrame()
-
-    df = df_1m.copy()
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
-    else:
-        df.index = df.index.tz_convert("Asia/Kolkata")
-
-    latest_ts = df.index.max()
-    if pd.isna(latest_ts):
-        log.error("compute_session_vwap_15m: latest_ts is NaN")
-        return None, pd.DataFrame()
-
-    session_date = latest_ts.date()
-    start = dt.datetime.combine(session_date, dt.time(9, 15), tzinfo=IST)
-    end   = dt.datetime.combine(session_date, dt.time(15, 30), tzinfo=IST)
-
-    df = df[(df.index >= start) & (df.index <= end)]
-    if df.empty:
-        log.error("compute_session_vwap_15m: empty after session filter")
-        return None, pd.DataFrame()
-
-    price = df["close"].astype(float)
-    vol   = df["volume"].fillna(0).astype(float)
-
-    df["pv"] = price * vol
-    df["cum_vol"] = vol.cumsum()
-    df["cum_pv"]  = df["pv"].cumsum()
-    df["vwap"]    = df["cum_pv"] / df["cum_vol"].replace({0: math.nan})
-
-    df15 = df.resample("15T").agg({
-        "open": "first",
-        "high": "max",
-        "low":  "min",
-        "close":"last",
-        "volume":"sum",
-        "vwap":"last"
-    }).dropna(subset=["close"])
-
-    vwap_latest = float(df15["vwap"].iloc[-1]) if not df15.empty else None
-    log.info("VWAP computed: %s", f"{vwap_latest:.2f}" if vwap_latest is not None else "None")
-    return vwap_latest, df15
-
 # ---------------- Weekday neighbors mapping ----------------
 def neighbors_by_weekday(d: dt.date) -> int:
     # Fri/Sat/Sun -> ±5, Mon -> ±4, Tue -> ±3, Wed -> ±2, Thu -> ±1
@@ -591,9 +541,8 @@ def tradingview_loop(mem: StoreMem):
             
             # single authoritative write to shared memory
             with mem.lock:
-                mem.last_tv     = now_ist()       # drives “Last TV pull” metric
-                mem.vwap_latest = vwap_latest     # dashboard & alerts read this
-                # (optional) keep the extra copy if you plan to use it elsewhere
+                mem.last_tv     = now_ist()
+                mem.vwap_latest = vwap_latest
                 mem.latest_vwap_period15 = vwap_latest
             
             # ---- 4) Evaluate VWAP alert -----------------------------------
