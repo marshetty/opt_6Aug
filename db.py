@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import plotly.express as px
-import yfinance as yf
+#import yfinance as yf
 import certifi
 import requests, urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
