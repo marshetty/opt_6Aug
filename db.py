@@ -586,6 +586,7 @@ class StoreMem:
         self.vwap_alert: str = "NO ALERT"
         self.last_alert_key: str = ""
         self.intraday = IntradayImbSeries()
+        self.intraday = IntradaySeries()
 # ------------------------------------------------------------------------
 # LIGHTWEIGHT IN-MEMORY SERIES TO TRACK INTRADAY IMBALANCE  (09:00-16:00)
 # ------------------------------------------------------------------------
@@ -900,7 +901,7 @@ if not df_trend.empty:
     fig_trend = px.line(
         df_trend,
         x=df_trend.index,
-        y="imb",
+        y="imbalance_pct",
         title="Intraday Imbalance % (live)",
         markers=True
     )
