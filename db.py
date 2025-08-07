@@ -585,6 +585,35 @@ class StoreMem:
 
         self.vwap_alert: str = "NO ALERT"
         self.last_alert_key: str = ""
+        self.intraday = IntradayImbSeries()
+# ------------------------------------------------------------------------
+# LIGHTWEIGHT IN-MEMORY SERIES TO TRACK INTRADAY IMBALANCE  (09:00-16:00)
+# ------------------------------------------------------------------------
+class IntradayImbSeries:
+    """
+    Keeps (timestamp, imbalance_pct) pairs for TODAY only.
+    Designed to be written from option_chain_loop and read from the UI.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.points: list[tuple[dt.datetime, float]] = []
+
+    def add_point(self, ts: dt.datetime, imb: float):
+        if not (dt.time(9, 0) <= ts.time() <= dt.time(16, 0)):
+            return                                              # outside session
+        today = now_ist().date()
+        with self.lock:
+            # keep only today's points
+            self.points = [(t, v) for t, v in self.points if t.date() == today]
+            self.points.append((ts, imb))
+
+    def to_dataframe(self) -> pd.DataFrame:
+        with self.lock:
+            if not self.points:
+                return pd.DataFrame()
+            df = pd.DataFrame(self.points, columns=["ts", "imb"])
+            df.set_index("ts", inplace=True)
+            return df
 
 def option_chain_loop(mem: StoreMem):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -593,20 +622,30 @@ def option_chain_loop(mem: StoreMem):
             raw = fetch_raw_option_chain()
             df, meta = build_df_with_imbalance(raw, {})
             if not df.empty:
+                # ── NEW: record today’s Imbalance % point ──────────────────
+                imb_pct = meta.get("imbalance_pct")          # <- lives in meta
+                if imb_pct is not None:
+                    mem.intraday.add_point(now_ist(), float(imb_pct))
+
+                # ── existing code (shared-memory, CSV, logging) ────────────
                 with mem.lock:
-                    mem.df_opt = df.copy()
+                    mem.df_opt  = df.copy()
                     mem.meta_opt = dict(meta)
                     mem.last_opt = now_ist()
                 try:
                     df.to_csv(CSV_PATH, index=False)
                 except Exception as e:
                     log.error("Write CSV failed: %s", e)
+
                 log.info("[OC] wrote %d rows", len(df))
             else:
                 log.warning("[OC] empty dataframe this cycle")
+
         except Exception as e:
             log.exception("OptionChain loop error: %s", e)
+
         time.sleep(FETCH_EVERY_SECONDS)
+
 
 def write_vwap_files(stamp: str, vwap_latest: float | None, spot: float | None, suggestion: str):
     try:
@@ -854,3 +893,23 @@ st.dataframe(
       .sort_values("Strike"),
     use_container_width=True
 )
+
+# ── Intraday Imbalance trend (09:00-16:00) ──────────────────────────────
+df_trend = mem.intraday.to_dataframe()
+if not df_trend.empty:
+    fig_trend = px.line(
+        df_trend,
+        x=df_trend.index,
+        y="imb",
+        title="Intraday Imbalance % (live)",
+        markers=True
+    )
+    fig_trend.update_layout(
+        xaxis_title="Time (IST)",
+        yaxis_title="Imbalance %",
+        margin=dict(t=60, r=20, l=20, b=40),
+        height=350
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+else:
+    st.info("Imbalance trend will appear after 09:00 IST once data accumulates.")
