@@ -545,7 +545,7 @@ def tradingview_loop(mem: StoreMem):
                         log.info("Imbalance refreshed immediately after ATM upgrade")
 
             # ---- 3) VWAP (15-min period) ----------------------------------
-            vwap_latest = compute_period_vwap(df1, period_min=15)
+            vwap_latest = compute_period_vwap(df1, period_len=15)
             
             # single authoritative write to shared memory
             with mem.lock:
