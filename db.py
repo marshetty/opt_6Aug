@@ -221,6 +221,47 @@ def fetch_tv_1m_session():
     log.error("TV fetch 1m failed after retries: %s", last_err)
     return None
 
+# ------------------------------------------------------------------
+# TradingView – 15-minute history (kept separate from the 1-minute feed)
+# ------------------------------------------------------------------
+def fetch_tv_15m_session(n_bars: int = 500) -> pd.DataFrame | None:
+    """
+    Pulls the most–recent 15-minute candles for NIFTY from TradingView.
+
+    • Uses the same tv_login() helper you already have.
+    • Returns a tz-aware IST DataFrame identical in schema to fetch_tv_1m_session().
+    """
+    try:
+        from tvdatafeed import Interval
+    except Exception as e:
+        log.error("tvdatafeed import failed (15m): %s", e)
+        return None
+
+    try:
+        tv = tv_login()                                     # re-use the existing login
+        df = tv.get_hist(
+            symbol="NIFTY",
+            exchange="NSE",
+            interval=Interval.in_15_minute,
+            n_bars=n_bars,
+        )
+        if df is None or df.empty:
+            log.warning("TV 15m fetch returned empty dataframe")
+            return None
+
+        # align timezone exactly the same way you do for 1-minute bars
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+        else:
+            df.index = df.index.tz_convert("Asia/Kolkata")
+
+        log.info("TV 15m bars fetched. Last: %s", df.index.max())
+        return df
+
+    except Exception as e:
+        log.error("TV 15m fetch failed: %s", e)
+        return None
+
 def price_at_0909(df_1m: pd.DataFrame) -> float | None:
     """Close at 09:09 IST of latest session; fallback nearest 09:05–09:14; else 09:15 open."""
     if df_1m is None or df_1m.empty:
@@ -510,41 +551,42 @@ def write_vwap_files(stamp: str, vwap_latest: float | None, spot: float | None, 
     except Exception as e:
         log.error("VWAP file write failed: %s", e)
 
-# -----------------------------------------------------------------------------
-# TV‑loop: pulls 1‑minute NIFTY data, upgrades ATM instantly, refreshes imbalance
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Trading-View worker thread
+# • still pulls the 1-minute feed for 09 : 09 ATM logic
+# • pulls an *independent* 15-minute feed that is used **only** for VWAP-with-period
+# ---------------------------------------------------------------------------
 def tradingview_loop(mem: StoreMem):
     """
-    1. Pull 1‑minute candles from TradingView every TV_FETCH_SECONDS.
-    2. If a fresh 09:09 IST price appears, update ATM → store → *immediately*
-       rebuild the option‑chain dataframe so imbalance / suggestion stay current.
-    3. Compute session VWAP (15‑minute cumulative) for the dashboard + alert.
-    4. Write a one‑line status file and append to the rolling VWAP CSV log.
+    1. Fetch BOTH 1-minute and 15-minute NIFTY candles every TV_FETCH_SECONDS.
+    2. Use the 1-minute feed for the 09:09 ATM upgrade just as before.
+    3. Calculate VWAP-with-period from the 15-minute feed (period_len = 1),
+       so it matches TradingView’s “VWAP (Length = 1)” applied to a 15-min chart.
+    4. Persist the result, evaluate alerts, log, and sleep.
     """
-
     while True:
         try:
-            # ---- 1) Get latest 1‑minute candles --------------------------------
-            df1 = fetch_tv_1m_session()                       # retry logic inside
+            # ── 1) Pull latest data ──────────────────────────────────────────
+            df_1m  = fetch_tv_1m_session()          # unchanged – for ATM logic
+            df_15m = fetch_tv_15m_session()         # NEW – 15-minute bars
 
-            # ---- 2) Instant ATM upgrade if 09:09 available --------------------
-            px909 = price_at_0909(df1) if df1 is not None else None
-            if px909 and px909 > 0:
-                base_val   = float(px909)
-                atm_guess  = round_to_50(base_val)
+            # ── 2) Instant ATM upgrade from 1-minute feed -------------------
+            px909 = price_at_0909(df_1m) if df_1m is not None else None
+            if px909:
+                base_val  = float(px909)
+                atm_guess = round_to_50(base_val)
 
                 store = load_atm_store()
                 needs_upgrade = (
-                    store.get("date")        != today_str() or
-                    store.get("atm_status")  != "captured-0909" or
+                    store.get("date")       != today_str() or
+                    store.get("atm_status") != "captured-0909" or
                     int(store.get("atm_strike", 0)) != atm_guess
                 )
-
                 if needs_upgrade:
                     update_store_atm(atm_guess, base_val, "captured-0909")
-                    log.info("ATM upgraded to %s (base %.2f) by TV‑loop", atm_guess, base_val)
+                    log.info("ATM upgraded to %s (base %.2f) by TV-loop", atm_guess, base_val)
 
-                    # ---- 2a) Recalculate imbalance right away ----------------
+                    # refresh imbalance immediately
                     raw_now = fetch_raw_option_chain()
                     df_now, meta_now = build_df_with_imbalance(raw_now, {})
                     if not df_now.empty:
@@ -555,25 +597,30 @@ def tradingview_loop(mem: StoreMem):
                         try:
                             df_now.to_csv(CSV_PATH, index=False)
                         except Exception as e:
-                            log.error("CSV write failed (TV‑trigger): %s", e)
-                        log.info("Imbalance refreshed immediately after ATM upgrade")
+                            log.error("CSV write failed (TV-trigger): %s", e)
 
-            # ---- 3) VWAP (15-min period) ----------------------------------
-            # show the five most-recent raw candles we’re about to use
-            log.info("\n%s", df1.tail(5).to_string())
-            vwap_latest = compute_period_vwap(df1, period_len=15)
-            
-            # single authoritative write to shared memory
+            # ── 3) VWAP-with-period (from 15-minute bars) -------------------
+            vwap_latest = None
+            if df_15m is not None:
+                # we only want the most-recent 15-minute candle,
+                # so use period_len = 1 against 15-minute data
+                vwap_latest = compute_period_vwap(df_15m, period_len=1)
+
+                # OPTIONAL DIAGNOSTIC: show the bar we just used
+                log.debug("15-min bar for VWAP:\n%s", df_15m.tail(1).to_string())
+
+            # ── 4) Store in shared memory -----------------------------------
             with mem.lock:
                 mem.last_tv     = now_ist()
-                mem.vwap_latest = vwap_latest
+                mem.vwap_latest = vwap_latest      # what the UI reads
+                # keep the name you were already using for anything else:
                 mem.latest_vwap_period15 = vwap_latest
-            
-            # ---- 4) Evaluate VWAP alert -----------------------------------
+
+            # ── 5) Alert logic ----------------------------------------------
             with mem.lock:
-                meta  = mem.meta_opt or {}
-                spot  = meta.get("underlying")
-                sugg  = meta.get("suggestion", "NO SIGNAL")
+                meta = mem.meta_opt or {}
+                spot = meta.get("underlying")
+                sugg = meta.get("suggestion", "NO SIGNAL")
 
             alert = "NO ALERT"
             if (
@@ -587,7 +634,7 @@ def tradingview_loop(mem: StoreMem):
             with mem.lock:
                 mem.vwap_alert = alert
 
-            # ---- 5) Persist VWAP snapshot & log line --------------------------
+            # ── 6) Persist snapshot & write one-line log --------------------
             stamp = now_ist().strftime("%Y-%m-%d %H:%M:%S")
             write_vwap_files(stamp, vwap_latest, spot, sugg)
 
@@ -596,13 +643,13 @@ def tradingview_loop(mem: StoreMem):
                      alert)
 
         except Exception as e:
-            # Keep the loop alive even on unexpected errors
             with mem.lock:
                 mem.last_tv     = now_ist()
                 mem.vwap_latest = None
             log.exception("TradingView loop error: %s", e)
 
         time.sleep(TV_FETCH_SECONDS)
+
 
 
 @st.cache_resource
