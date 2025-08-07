@@ -241,75 +241,58 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
         log.error("price_at_0909 error: %s", e)
     return None
 
-# --- Rolling VWAP over *N* most-recent 1-minute bars (TradingView logic) ----
-# --- Rolling VWAP over N most-recent 1-min bars (TradingView logic) ---------
-def compute_period_vwap(
-        df_1m: pd.DataFrame,
-        period_len: int | None = None,
-        period_min: int | None = None,     # legacy kwarg kept for safety
-) -> float | None:
+# --- Rolling VWAP over the most-recent *period_len* 1-minute bars -----------
+def compute_period_vwap(df_1m: pd.DataFrame, period_len: int = 14) -> float | None:
     """
-    Re-implementation of the Pine v3 script you posted.
+    TradingView “VWAP (Length = N)” re-implemented in pandas.
 
-    Args
-    ----
-    df_1m      : DataFrame with columns high, low, close, volume
-    period_len : preferred keyword for length N   (e.g. 14 or 15)
-    period_min : backward-compat (old code passed period_min)
+    Pine source you quoted:
 
-    Returns
-    -------
-    float VWAP_N   or  None if df is invalid
+        typicalPrice       = (high + low + close) / 3
+        tpVol              = typicalPrice * volume
+        sumTpVol_N         = sum(tpVol,     N)
+        sumVol_N           = sum(volume,    N)
+        vwapValue          = sumTpVol_N / sumVol_N
+
+    We reproduce that literally:
+
+        • the *last* N bars ( inclusive )
+        • no session reset; just a rolling window
+        • if every bar’s volume == 0 → return the mean(typicalPrice)
     """
-
-    # ---- resolve N --------------------------------------------------------
-    if period_len is None and period_min is None:
-        N = 15
-    else:
-        N = period_len if period_len is not None else period_min
-
-    # ---- sanity-check -----------------------------------------------------
-    if (
-        df_1m is None
-        or df_1m.empty
-        or not isinstance(df_1m.index, pd.DatetimeIndex)
-    ):
-        log.error("compute_period_vwap: invalid df")
+    # 1) guard clauses -------------------------------------------------------
+    if df_1m is None or df_1m.empty or not isinstance(df_1m.index, pd.DatetimeIndex):
+        log.error("compute_period_vwap: invalid df_1m")
         return None
 
-    # ---- convert to Asia/Kolkata -----------------------------------------
+    # 2) force index → Asia/Kolkata -----------------------------------------
     if df_1m.index.tz is None:
-        df_1m.index = (
-            df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
-        )
+        df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
     else:
         df_1m.index = df_1m.index.tz_convert("Asia/Kolkata")
 
-    # ---- slice the last N rows -------------------------------------------
-    win = df_1m.tail(N)
-    if len(win) < N:
-        log.warning(
-            "VWAP_N: only %d / %d bars available – computing anyway",
-            len(win), N,
-        )
+    # 3) keep only the last *period_len* rows -------------------------------
+    win = df_1m.tail(period_len)
 
-    # ---- typical price & volume ------------------------------------------
-    tp  = (win["high"] + win["low"] + win["close"]) / 3.0
-    vol = win["volume"].fillna(0).astype(float)
+    if win.shape[0] == 0:
+        return None
+    if win.shape[0] < period_len:
+        log.warning("compute_period_vwap: only %d of %d bars available", win.shape[0], period_len)
 
-    # ---- handle all-zero volume (index symbols) --------------------------
-    if vol.sum() == 0:
-        vwap = float(tp.mean())
-        log.debug("VWAP_N(vol=0): mean(tp)=%.2f from %d bars", vwap, len(win))
-        return vwap
+    # 4) exact Pine arithmetic ----------------------------------------------
+    tp   = (win["high"] + win["low"] + win["close"]) / 3.0
+    vol  = win["volume"].fillna(0).astype(float)
+    tpV  = tp * vol
 
-    # ---- normal VWAP ------------------------------------------------------
-    vwap = float((tp * vol).sum() / vol.sum())
-    log.debug(
-        "VWAP_N: %.2f from %d bars  Σvol=%.0f  latest=%s",
-        vwap, len(win), vol.sum(), win.index.max(),
-    )
-    return vwap
+    sum_tpV = tpV.sum()
+    sum_vol = vol.sum()
+
+    # 5) all-zero volume fallback (same behaviour as Pine) -------------------
+    if sum_vol == 0:
+        return float(tp.mean())
+
+    return float(sum_tpV / sum_vol)
+
 
 # ---------------- Weekday neighbors mapping ----------------
 def neighbors_by_weekday(d: dt.date) -> int:
