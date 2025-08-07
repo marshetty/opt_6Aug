@@ -243,17 +243,14 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
     return None
 
 # --- Rolling VWAP over the last <period_min> minutes (TradingView formula) ---
-def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | None:
+def compute_period_vwap(df_1m: pd.DataFrame, period_len: int = 15) -> float | None:
     """
-    TradingView-style VWAP (Length = N)
-
-    • Typical Price TP = (high + low + close) / 3  
-    • VWAP_N     = Σ(TP × vol, last N bars) ÷ Σ(vol, last N bars)
-
-    When TradingView sends zero volume for index candles (common on NIFTY),
-    we fall back to the **mean of Typical Price** (equal-weight VWAP).
+    TradingView-style Rolling VWAP:
+        • Typical Price TP = (high+low+close)/3
+        • VWAP_N = Σ(TP * vol, last N bars) ÷ Σ(vol, last N bars)
+    Uses the *last N rows*, matching Pine’s sum(x, N).
     """
-    # 1) sanity checks -------------------------------------------------------
+    # 1) basic validation
     if (
         df_1m is None
         or df_1m.empty
@@ -262,33 +259,26 @@ def compute_period_vwap(df_1m: pd.DataFrame, period_min: int = 15) -> float | No
         log.error("compute_period_vwap: invalid df_1m")
         return None
 
-    # 2) force IST tz --------------------------------------------------------
+    # 2) make index IST
     if df_1m.index.tz is None:
         df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
     else:
         df_1m.index = df_1m.index.tz_convert("Asia/Kolkata")
 
-    latest_ts = df_1m.index.max()
-    if pd.isna(latest_ts):
+    # 3) grab exactly the last N bars
+    win = df_1m.tail(period_len)
+    if len(win) < period_len:
+        log.warning("compute_period_vwap: only %d bars available", len(win))
         return None
 
-    # 3) rolling window ------------------------------------------------------
-    window_start = latest_ts - dt.timedelta(minutes=period_min - 1)
-    win = df_1m[df_1m.index >= window_start]
-    if win.empty:
-        log.warning("compute_period_vwap: window empty")
-        return None
-
-    # 4) TradingView formula -------------------------------------------------
     tp  = (win["high"] + win["low"] + win["close"]) / 3.0
     vol = win["volume"].fillna(0).astype(float)
 
-    if vol.sum() == 0:                           # no volume ⇒ equal-weight
+    if vol.sum() == 0:                 # all zero → equal-weight mean
         return float(tp.mean())
 
     vwap = float((tp * vol).sum() / vol.sum())
     return vwap
-
 
 # ---------------- Weekday neighbors mapping ----------------
 def neighbors_by_weekday(d: dt.date) -> int:
