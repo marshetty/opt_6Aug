@@ -854,12 +854,3 @@ st.dataframe(
       .sort_values("Strike"),
     use_container_width=True
 )
-
-plot_df = df_live.melt(id_vars=["Strike"],
-                       value_vars=["Call Chg OI", "Put Chg OI"],
-                       var_name="Side", value_name="Chg OI").sort_values("Strike")
-title = f"ΔOI by Strike (ATM {atm_strike}, ±{neighbors_each}) • Imbalance {imbalance_pct:,.2f}% → {suggestion}"
-fig = px.bar(plot_df, x="Strike", y="Chg OI", color="Side", barmode="group", text="Chg OI", title=title)
-fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
-fig.update_layout(xaxis=dict(type="category"), margin=dict(t=80, r=20, l=20, b=40))
-st.plotly_chart(fig, use_container_width=True)
