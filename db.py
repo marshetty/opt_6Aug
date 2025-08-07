@@ -191,6 +191,13 @@ def tv_login():
         log.error("TradingView login failed: %s", e)
         raise
 
+import functools
+
+@functools.lru_cache(maxsize=1)
+def tv_login_cached():
+    return tv_login()
+
+
 def fetch_tv_1m_session():
     """Fetch latest 1m NIFTY candles from TV, tz-aware IST; retry a few times."""
     try:
@@ -226,40 +233,46 @@ def fetch_tv_1m_session():
 # ------------------------------------------------------------------
 def fetch_tv_15m_session(n_bars: int = 500) -> pd.DataFrame | None:
     """
-    Pulls the most–recent 15-minute candles for NIFTY from TradingView.
+    Return the most-recent 15-minute candles for NIFTY, IST-indexed.
 
-    • Uses the same tv_login() helper you already have.
-    • Returns a tz-aware IST DataFrame identical in schema to fetch_tv_1m_session().
+    • Uses the cached TradingView connection so we don’t hit the rate limit.
+    • Schema and tz handling are identical to fetch_tv_1m_session().
     """
     try:
-        from tvdatafeed import Interval
+        # IMPORTANT: module name is camel-case (tvDatafeed), not tvdatafeed
+        from tvDatafeed import Interval
     except Exception as e:
-        log.error("tvdatafeed import failed (15m): %s", e)
+        log.error("tvDatafeed import failed (15m): %s", e)
         return None
 
     try:
-        tv = tv_login()                                     # re-use the existing login
+        tv = _tv_login_cached()          # single login reused across calls
         df = tv.get_hist(
-            symbol="NIFTY",
-            exchange="NSE",
-            interval=Interval.in_15_minute,
-            n_bars=n_bars,
+            symbol   = "NIFTY",
+            exchange = "NSE",
+            interval = Interval.in_15_minute,
+            n_bars   = n_bars,
         )
+
         if df is None or df.empty:
-            log.warning("TV 15m fetch returned empty dataframe")
+            log.warning("TV 15-minute fetch returned empty dataframe")
             return None
 
-        # align timezone exactly the same way you do for 1-minute bars
+        # --- ensure timezone → Asia/Kolkata (same as 1m helper) -------------
         if df.index.tz is None:
-            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+            df.index = (
+                df.index
+                .tz_localize("UTC")
+                .tz_convert("Asia/Kolkata")
+            )
         else:
             df.index = df.index.tz_convert("Asia/Kolkata")
 
-        log.info("TV 15m bars fetched. Last: %s", df.index.max())
+        log.info("TV 15-minute bars fetched. Last candle: %s", df.index.max())
         return df
 
     except Exception as e:
-        log.error("TV 15m fetch failed: %s", e)
+        log.error("TV 15-minute fetch failed: %s", e)
         return None
 
 def price_at_0909(df_1m: pd.DataFrame) -> float | None:
