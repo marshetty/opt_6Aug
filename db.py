@@ -586,7 +586,6 @@ class StoreMem:
         self.vwap_alert: str = "NO ALERT"
         self.last_alert_key: str = ""
         self.intraday = IntradayImbSeries()
-        self.intraday = IntradaySeries()
 # ------------------------------------------------------------------------
 # LIGHTWEIGHT IN-MEMORY SERIES TO TRACK INTRADAY IMBALANCE  (09:00-16:00)
 # ------------------------------------------------------------------------
