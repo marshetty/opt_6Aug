@@ -3,7 +3,6 @@
 # - ATM: TV 09:09 → Yahoo daily open (robust, no-verify) → NSE underlying (provisional)
 # - TV loop immediately upgrades ATM when 09:09 appears
 # - Manual ATM override in sidebar
-# - Yahoo 429 tolerant, retries, query1/query2, verify=False
 # - OC loop reloads ATM store every cycle
 # - Weekday neighbors: Fri/Sat/Sun ±5, Mon ±4, Tue ±3, Wed ±2, Thu ±1
 # - VWAP 15m session from TV 1m candles
