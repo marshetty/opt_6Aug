@@ -246,7 +246,7 @@ def fetch_tv_15m_session(n_bars: int = 500) -> pd.DataFrame | None:
         return None
 
     try:
-        tv = _tv_login_cached()          # single login reused across calls
+        tv = tv_login_cached()          # single login reused across calls
         df = tv.get_hist(
             symbol   = "NIFTY",
             exchange = "NSE",
