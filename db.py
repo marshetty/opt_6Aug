@@ -242,52 +242,73 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
     return None
 
 # --- Rolling VWAP over *N* most-recent 1-minute bars (TradingView logic) ----
-def compute_period_vwap(df_1m: pd.DataFrame, period_len: int = 15) -> float | None:
+# --- Rolling VWAP over N most-recent 1-min bars (TradingView logic) ---------
+def compute_period_vwap(
+        df_1m: pd.DataFrame,
+        period_len: int | None = None,
+        period_min: int | None = None,     # legacy kwarg kept for safety
+) -> float | None:
     """
-    TradingView-style VWAP (Length = N).
+    Re-implementation of the Pine v3 script you posted.
 
-    Formula-per-bar:
-        TP  = (high + low + close) / 3
-        VWAP_N = Σ(TP × volume, last N bars) ÷ Σ(volume, last N bars)
+    Args
+    ----
+    df_1m      : DataFrame with columns high, low, close, volume
+    period_len : preferred keyword for length N   (e.g. 14 or 15)
+    period_min : backward-compat (old code passed period_min)
 
-    • Uses the most-recent *period_len* rows, exactly like Pine’s  sum(x, N).
-    • If volume is zero for every bar (common on NIFTY index), falls back to
-      the equal-weighted mean of Typical Price.
-    • If fewer than N rows are available (e.g., script started mid-session),
-      it still computes VWAP with the bars it has and logs a warning.
+    Returns
+    -------
+    float VWAP_N   or  None if df is invalid
     """
-    # 1) Basic validation ----------------------------------------------------
+
+    # ---- resolve N --------------------------------------------------------
+    if period_len is None and period_min is None:
+        N = 15
+    else:
+        N = period_len if period_len is not None else period_min
+
+    # ---- sanity-check -----------------------------------------------------
     if (
         df_1m is None
         or df_1m.empty
         or not isinstance(df_1m.index, pd.DatetimeIndex)
     ):
-        log.error("compute_period_vwap: invalid df_1m")
+        log.error("compute_period_vwap: invalid df")
         return None
 
-    # 2) Ensure timezone is IST ---------------------------------------------
+    # ---- convert to Asia/Kolkata -----------------------------------------
     if df_1m.index.tz is None:
-        df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+        df_1m.index = (
+            df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+        )
     else:
         df_1m.index = df_1m.index.tz_convert("Asia/Kolkata")
 
-    # 3) Grab the last *period_len* rows ------------------------------------
-    win = df_1m.tail(period_len)
-    if len(win) < period_len:
+    # ---- slice the last N rows -------------------------------------------
+    win = df_1m.tail(N)
+    if len(win) < N:
         log.warning(
-            "compute_period_vwap: only %d bars available (need %d) – "
-            "calculating with available bars",
-            len(win), period_len,
+            "VWAP_N: only %d / %d bars available – computing anyway",
+            len(win), N,
         )
 
-    # 4) TradingView VWAP calculation ---------------------------------------
+    # ---- typical price & volume ------------------------------------------
     tp  = (win["high"] + win["low"] + win["close"]) / 3.0
     vol = win["volume"].fillna(0).astype(float)
 
-    if vol.sum() == 0:                      # all zero → equal-weight
-        return float(tp.mean())
+    # ---- handle all-zero volume (index symbols) --------------------------
+    if vol.sum() == 0:
+        vwap = float(tp.mean())
+        log.debug("VWAP_N(vol=0): mean(tp)=%.2f from %d bars", vwap, len(win))
+        return vwap
 
+    # ---- normal VWAP ------------------------------------------------------
     vwap = float((tp * vol).sum() / vol.sum())
+    log.debug(
+        "VWAP_N: %.2f from %d bars  Σvol=%.0f  latest=%s",
+        vwap, len(win), vol.sum(), win.index.max(),
+    )
     return vwap
 
 # ---------------- Weekday neighbors mapping ----------------
@@ -555,6 +576,8 @@ def tradingview_loop(mem: StoreMem):
                         log.info("Imbalance refreshed immediately after ATM upgrade")
 
             # ---- 3) VWAP (15-min period) ----------------------------------
+            # show the five most-recent raw candles we’re about to use
+            log.info("\n%s", df1.tail(5).to_string())
             vwap_latest = compute_period_vwap(df1, period_len=15)
             
             # single authoritative write to shared memory
