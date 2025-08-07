@@ -242,15 +242,22 @@ def price_at_0909(df_1m: pd.DataFrame) -> float | None:
         log.error("price_at_0909 error: %s", e)
     return None
 
-# --- Rolling VWAP over the last <period_min> minutes (TradingView formula) ---
+# --- Rolling VWAP over *N* most-recent 1-minute bars (TradingView logic) ----
 def compute_period_vwap(df_1m: pd.DataFrame, period_len: int = 15) -> float | None:
     """
-    TradingView-style Rolling VWAP:
-        • Typical Price TP = (high+low+close)/3
-        • VWAP_N = Σ(TP * vol, last N bars) ÷ Σ(vol, last N bars)
-    Uses the *last N rows*, matching Pine’s sum(x, N).
+    TradingView-style VWAP (Length = N).
+
+    Formula-per-bar:
+        TP  = (high + low + close) / 3
+        VWAP_N = Σ(TP × volume, last N bars) ÷ Σ(volume, last N bars)
+
+    • Uses the most-recent *period_len* rows, exactly like Pine’s  sum(x, N).
+    • If volume is zero for every bar (common on NIFTY index), falls back to
+      the equal-weighted mean of Typical Price.
+    • If fewer than N rows are available (e.g., script started mid-session),
+      it still computes VWAP with the bars it has and logs a warning.
     """
-    # 1) basic validation
+    # 1) Basic validation ----------------------------------------------------
     if (
         df_1m is None
         or df_1m.empty
@@ -259,22 +266,26 @@ def compute_period_vwap(df_1m: pd.DataFrame, period_len: int = 15) -> float | No
         log.error("compute_period_vwap: invalid df_1m")
         return None
 
-    # 2) make index IST
+    # 2) Ensure timezone is IST ---------------------------------------------
     if df_1m.index.tz is None:
         df_1m.index = df_1m.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
     else:
         df_1m.index = df_1m.index.tz_convert("Asia/Kolkata")
 
-    # 3) grab exactly the last N bars
+    # 3) Grab the last *period_len* rows ------------------------------------
     win = df_1m.tail(period_len)
     if len(win) < period_len:
-        log.warning("compute_period_vwap: only %d bars available", len(win))
-        return None
+        log.warning(
+            "compute_period_vwap: only %d bars available (need %d) – "
+            "calculating with available bars",
+            len(win), period_len,
+        )
 
+    # 4) TradingView VWAP calculation ---------------------------------------
     tp  = (win["high"] + win["low"] + win["close"]) / 3.0
     vol = win["volume"].fillna(0).astype(float)
 
-    if vol.sum() == 0:                 # all zero → equal-weight mean
+    if vol.sum() == 0:                      # all zero → equal-weight
         return float(tp.mean())
 
     vwap = float((tp * vol).sum() / vol.sum())
