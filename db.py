@@ -275,6 +275,65 @@ def fetch_tv_15m_session(n_bars: int = 500) -> pd.DataFrame | None:
         log.error("TV 15-minute fetch failed: %s", e)
         return None
 
+# --- TradingView “VWAP (Length = N)” on any timeframe ----------------------
+def compute_tv_vwap(
+        df: pd.DataFrame,
+        period_len: int = 14
+) -> float | None:
+    """
+    Implements the Pine-script snippet you posted *verbatim*:
+
+        typicalPrice                = (high + low + close)/3
+        tpVol                       = typicalPrice * volume
+        cumulativeTPVol (sum) (N)   = Σ(tpVol, N)
+        cumulativeVol   (sum) (N)   = Σ(volume, N)
+        vwapValue                   = cumulativeTPVol / cumulativeVol
+
+    • Works on 15-minute candles **or any timeframe** (supply the DataFrame).
+    • Uses the *last* `period_len` rows (same as Pine’s `sum(x, N)`).
+    • If every bar’s volume is 0, falls back to the mean of typical price.
+    """
+
+    # 1️⃣ Sanity checks ------------------------------------------------------
+    if (
+        df is None
+        or df.empty
+        or not isinstance(df.index, pd.DatetimeIndex)
+    ):
+        log.error("compute_tv_vwap: invalid DataFrame")
+        return None
+
+    # 2️⃣ Ensure the index is IST (TradingView shows IST for NSE) -----------
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
+    else:
+        df.index = df.index.tz_convert("Asia/Kolkata")
+
+    # 3️⃣ Keep only the most-recent N bars ----------------------------------
+    win = df.tail(period_len)
+    if win.shape[0] == 0:
+        return None
+    if win.shape[0] < period_len:
+        log.warning(
+            "compute_tv_vwap: only %d of %d bars available – "
+            "calculating with the bars we have",
+            win.shape[0], period_len
+        )
+
+    # 4️⃣ Direct translation of the Pine script -----------------------------
+    tp   = (win["high"] + win["low"] + win["close"]) / 3.0
+    vol  = win["volume"].fillna(0).astype(float)
+    tpV  = tp * vol
+
+    sum_tpV = tpV.sum()
+    sum_vol = vol.sum()
+
+    if sum_vol == 0:                      # TV’s fallback when vol == 0
+        return float(tp.mean())
+
+    return float(sum_tpV / sum_vol)
+
+
 def price_at_0909(df_1m: pd.DataFrame) -> float | None:
     """Close at 09:09 IST of latest session; fallback nearest 09:05–09:14; else 09:15 open."""
     if df_1m is None or df_1m.empty:
@@ -617,7 +676,7 @@ def tradingview_loop(mem: StoreMem):
             if df_15m is not None:
                 # we only want the most-recent 15-minute candle,
                 # so use period_len = 1 against 15-minute data
-                vwap_latest = compute_period_vwap(df_15m, period_len=1)
+                vwap_latest = compute_tv_vwap(df_15m, period_len=14)
 
                 # OPTIONAL DIAGNOSTIC: show the bar we just used
                 log.debug("15-min bar for VWAP:\n%s", df_15m.tail(1).to_string())
